@@ -13,6 +13,7 @@ from google import genai
 from google.genai import types
 
 from config import GEMINI_API_KEY
+from browser import get_page_text, get_rendered_html  # CRITICAL: Import browser functions
 
 # Initialize Gemini client
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -56,6 +57,7 @@ async def download_file(url: str, headers: Optional[Dict] = None) -> bytes:
 
 
 async def fetch_api_data(url: str, headers: Optional[Dict] = None) -> Any:
+    """Fetch data from API - returns JSON or text."""
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         resp = await client.get(url, headers=headers or {})
         resp.raise_for_status()
@@ -65,9 +67,31 @@ async def fetch_api_data(url: str, headers: Optional[Dict] = None) -> Any:
             return resp.text
 
 
+async def scrape_page_content(url: str) -> str:
+    """
+    CRITICAL FIX: Use browser to scrape JavaScript-rendered pages.
+    This is essential for web scraping tasks.
+    """
+    try:
+        # First try with browser (for JS-rendered pages)
+        content = await get_page_text(url, wait_ms=3000)
+        return content
+    except Exception as e:
+        print(f"Browser scraping failed, trying HTTP: {e}")
+        # Fallback to simple HTTP GET
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return resp.text
+        except Exception as e2:
+            print(f"HTTP scraping also failed: {e2}")
+            return ""
+
+
 def extract_urls_from_text(text: str, base_url: str = "") -> Dict[str, List[str]]:
-    """Robust URL extractor."""
-    urls = {"submit": [], "download": [], "api": [], "general": []}
+    """Robust URL extractor with relative URL support."""
+    urls = {"submit": [], "download": [], "scrape": [], "api": [], "general": []}
     
     # 1. Extract Submit URLs
     submission_regions = re.finditer(r"(?:Post|Submit)(?:[\s\S]{0,50}?)to\s+([\s\S]{0,200})", text, re.IGNORECASE)
@@ -80,22 +104,44 @@ def extract_urls_from_text(text: str, base_url: str = "") -> Dict[str, List[str]
             if parsed.path not in ["", "/"] and full_url not in urls["submit"]:
                 urls["submit"].append(full_url)
     
-    # 2. Extract Download/API URLs
+    # 2. CRITICAL FIX: Extract relative URLs for scraping
+    # Look for patterns like: /demo-scrape-data?email=...
+    relative_urls = re.findall(r'(/[^\s<>"\'\)]+(?:\?[^\s<>"\'\)]+)?)', text)
+    for rel_url in relative_urls:
+        rel_url = rel_url.rstrip(".,;:)]")
+        # Skip if it's already in submit URLs
+        if any(rel_url in s for s in urls["submit"]):
+            continue
+        
+        full_url = urljoin(base_url, rel_url)
+        lower = full_url.lower()
+        
+        if 'scrape' in lower and full_url not in urls["scrape"]:
+            urls["scrape"].append(full_url)
+        elif any(k in lower for k in ['api', 'data']) and full_url not in urls["api"]:
+            urls["api"].append(full_url)
+    
+    # 3. Extract absolute URLs
     all_matches = re.findall(r'(?:https?://|/|(?<=\())([\w\-.%]+\.(?:csv|pdf|xlsx?|json|txt))|((?:https?://|/)[^\s<>"\'\)]+)', text, re.IGNORECASE)
     potential_urls = [m[0] if m[0] else m[1] for m in all_matches]
 
     for raw_url in potential_urls:
         full_url = urljoin(base_url, raw_url.rstrip(".,;:)]"))
         parsed = urlparse(full_url)
-        if parsed.path in ["", "/"] or full_url in urls["submit"]: continue
+        if parsed.path in ["", "/"] or full_url in urls["submit"]: 
+            continue
 
         lower = full_url.lower()
         if any(ext in lower for ext in ['.pdf', '.csv', '.xlsx', '.xls', '.json', '.txt', '.png', '.jpg']):
-            if full_url not in urls["download"]: urls["download"].append(full_url)
-        elif any(k in lower for k in ['api', 'scrape', 'data']):
-            if full_url not in urls["api"]: urls["api"].append(full_url)
+            if full_url not in urls["download"]: 
+                urls["download"].append(full_url)
+        elif 'scrape' in lower and full_url not in urls["scrape"]:
+            urls["scrape"].append(full_url)
+        elif any(k in lower for k in ['api', 'data']):
+            if full_url not in urls["api"]: 
+                urls["api"].append(full_url)
         elif 'submit' in lower and full_url not in urls["submit"]:
-             urls["submit"].append(full_url)
+            urls["submit"].append(full_url)
             
     return urls
 
@@ -130,13 +176,12 @@ def parse_data_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
 
 
 def clean_answer(answer: str) -> str:
-    """Strip markdown code blocks, whitespace, and quotes."""
-    if not isinstance(answer, str): return answer
-    # Remove markdown code blocks
+    """Strip markdown code blocks and whitespace."""
+    if not isinstance(answer, str): 
+        return answer
     answer = re.sub(r'```\w*\s*', '', answer)
     answer = re.sub(r'\s*```', '', answer)
-    # Remove surrounding whitespace and quotes (CRITICAL FIX)
-    return answer.strip().strip('"').strip("'")
+    return answer.strip()
 
 
 async def solve_data_analysis(question: str, df: pd.DataFrame) -> Any:
@@ -167,66 +212,118 @@ async def solve_data_analysis(question: str, df: pd.DataFrame) -> Any:
         # Auto-sum list results
         if isinstance(result, (list, pd.Series, np.ndarray)):
             if hasattr(result, '__len__') and len(result) > 1:
-                 print("Detected list result, auto-summing...")
-                 if hasattr(result, 'sum'): return float(result.sum())
-                 else: return float(sum(result))
+                print("Detected list result, auto-summing...")
+                if hasattr(result, 'sum'): 
+                    return float(result.sum())
+                else: 
+                    return float(sum(result))
         
-        if hasattr(result, 'item'): return result.item()
+        if hasattr(result, 'item'): 
+            return result.item()
         return result
     except Exception as e:
-        print(f"Pandas failed: {e}")
-        try: return float(df.select_dtypes('number').iloc[:, 0].sum())
-        except: return str(e)
+        print(f"Pandas execution failed: {e}")
+        try: 
+            return float(df.select_dtypes('number').iloc[:, 0].sum())
+        except: 
+            return str(e)
 
 
 async def solve_quiz_from_text(quiz_text: str, quiz_url: str) -> Tuple[Any, str, Optional[str]]:
+    """Main solver with improved web scraping support."""
     urls = extract_urls_from_text(quiz_text, base_url=quiz_url)
     submit_url = urls["submit"][0] if urls["submit"] else None
     
+    print(f"Extracted URLs: {urls}")
+    
     try:
-        # 1. Handle File Downloads
-        pdf_url = next((u for u in urls["download"] if '.pdf' in u.lower()), None)
-        data_url = next((u for u in urls["download"] if u != pdf_url), None)
+        # 1. CRITICAL FIX: Handle Web Scraping Tasks FIRST
+        if urls["scrape"]:
+            scrape_url = urls["scrape"][0]
+            print(f"Web scraping task detected. Scraping: {scrape_url}")
+            
+            # Use browser to scrape the page
+            scraped_content = await scrape_page_content(scrape_url)
+            print(f"Scraped content preview: {scraped_content[:300]}")
+            
+            # Extract the secret/answer from scraped content
+            system = """You are extracting specific information from scraped web content.
+            Find the secret code, answer, or key information requested in the question.
+            Return ONLY the exact value, no explanations, no markdown, no quotes."""
+            
+            user = f"""Question: {quiz_text}
 
+Scraped Content:
+{scraped_content}
+
+Extract the answer:"""
+            
+            answer = await call_llm(system, user)
+            answer = clean_answer(answer)
+            print(f"Extracted answer from scrape: {answer}")
+            return answer, "string", submit_url
+        
+        # 2. Handle PDF Downloads
+        pdf_url = next((u for u in urls["download"] if '.pdf' in u.lower()), None)
         if pdf_url:
+            print(f"PDF task detected: {pdf_url}")
             pdf_bytes = await download_file(pdf_url)
             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                text_content = pdf.pages[0].extract_text()
-                ans = await call_llm("Extract the exact answer value.", f"Q: {quiz_text}\nText: {text_content}")
+                # Extract text from all pages
+                all_text = ""
+                for page in pdf.pages:
+                    all_text += page.extract_text() + "\n\n"
+                
+                system = "Extract the exact answer from this PDF content. Return only the value."
+                user = f"Question: {quiz_text}\n\nPDF Text:\n{all_text[:2000]}"
+                ans = await call_llm(system, user)
                 return clean_answer(ans), "string", submit_url
         
-        elif data_url:
+        # 3. Handle Data File Downloads (CSV, Excel, JSON)
+        data_url = next((u for u in urls["download"] if u != pdf_url), None)
+        if data_url:
+            print(f"Data file task detected: {data_url}")
             file_bytes = await download_file(data_url)
             df = parse_data_file(file_bytes, data_url.split('/')[-1])
+            print(f"Loaded DataFrame shape: {df.shape}")
+            print(f"DataFrame head:\n{df.head()}")
             answer = await solve_data_analysis(quiz_text, df)
             return answer, "number", submit_url
 
-        # 2. Handle API / Scrape
+        # 4. Handle API Endpoints (non-scraping)
         elif urls["api"]:
             api_url = urls["api"][0]
+            print(f"API task detected: {api_url}")
+            
+            # Check for custom headers
             headers = {}
             auth_match = re.search(r'Authorization:\s*([^\n]+)', quiz_text, re.IGNORECASE)
-            if auth_match: headers['Authorization'] = auth_match.group(1).strip()
+            if auth_match: 
+                headers['Authorization'] = auth_match.group(1).strip()
             
             data = await fetch_api_data(api_url, headers)
             
-            # --- CRITICAL FIX: Treat JSON API data as text for extraction ---
-            # This handles { "secret": "CODE" } much better than converting to DataFrame
+            # Convert to string for LLM extraction
             if isinstance(data, (dict, list)):
-                data_str = json.dumps(data)
+                data_str = json.dumps(data, indent=2)
             else:
                 data_str = str(data)
-                
-            system = "Extract ONLY the secret code/answer from this data. Return strictly the value, no markdown."
-            user = f"Question: {quiz_text}\n\nData:\n{data_str}"
+            
+            print(f"API response preview: {data_str[:300]}")
+            
+            system = "Extract ONLY the secret code/answer from this API data. Return strictly the value, no markdown."
+            user = f"Question: {quiz_text}\n\nAPI Response:\n{data_str}"
             answer = await call_llm(system, user)
             return clean_answer(answer), "string", submit_url
 
     except Exception as e:
         print(f"Solver error: {e}")
+        import traceback
+        traceback.print_exc()
 
-    # 3. Fallback
-    system = "You are a helpful assistant. Answer the question directly."
+    # 5. Fallback: Use LLM to answer directly
+    print("Using fallback LLM answer")
+    system = "You are a helpful assistant. Answer the question directly and concisely."
     user = f"Question:\n{quiz_text}\n\nAnswer:"
     answer = await call_llm(system, user)
     return clean_answer(answer), "string", submit_url
