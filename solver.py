@@ -130,11 +130,13 @@ def parse_data_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
 
 
 def clean_answer(answer: str) -> str:
-    """Strip markdown code blocks and whitespace."""
+    """Strip markdown code blocks, whitespace, and quotes."""
     if not isinstance(answer, str): return answer
+    # Remove markdown code blocks
     answer = re.sub(r'```\w*\s*', '', answer)
     answer = re.sub(r'\s*```', '', answer)
-    return answer.strip()
+    # Remove surrounding whitespace and quotes (CRITICAL FIX)
+    return answer.strip().strip('"').strip("'")
 
 
 async def solve_data_analysis(question: str, df: pd.DataFrame) -> Any:
