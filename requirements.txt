@@ -6,10 +6,8 @@ pydantic
 pandas
 numpy
 openpyxl
-pypdf
 pdfplumber
 matplotlib
 google-genai
 python-dotenv
 beautifulsoup4
-lxml
