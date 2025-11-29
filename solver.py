@@ -242,11 +242,36 @@ async def solve_quiz_from_text(quiz_text: str, quiz_url: str) -> Tuple[Any, str,
             print(f"Audio transcription task detected: {audio_url}")
             audio_bytes = await download_file(audio_url)
             
-            system = "Transcribe the audio exactly as spoken. Include all words and numbers. Return only the transcription in lowercase."
-            user = f"Question: {quiz_text}\n\nTranscribe this audio file:"
+            system = "Transcribe the audio exactly as spoken. Return words in lowercase with spaces. If there are digits spoken (like 'two one nine'), write them as a single number (219), not spelled out."
+            user = f"Question: {quiz_text}\n\nTranscribe this audio file. Format: 'phrase words ### where ### is the 3-digit number:"
             
             answer = await call_llm(system, user, audio_bytes=audio_bytes)
-            return clean_answer(answer), "string", submit_url
+            answer = clean_answer(answer)
+            
+            # Post-process: convert spelled-out digits to numbers
+            # "two one nine" -> "219"
+            digit_words = {
+                'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
+                'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9'
+            }
+            words = answer.split()
+            result = []
+            i = 0
+            while i < len(words):
+                if words[i] in digit_words:
+                    # Collect consecutive digit words
+                    digits = ''
+                    while i < len(words) and words[i] in digit_words:
+                        digits += digit_words[words[i]]
+                        i += 1
+                    result.append(digits)
+                else:
+                    result.append(words[i])
+                    i += 1
+            
+            answer = ' '.join(result)
+            print(f"Processed transcription: {answer}")
+            return answer, "string", submit_url
         
         # Handle image analysis (PNG, JPG for color detection)
         image_url = next((u for u in urls["download"] if any(ext in u.lower() for ext in ['.png', '.jpg', '.jpeg'])), None)
@@ -294,20 +319,31 @@ async def solve_quiz_from_text(quiz_text: str, quiz_url: str) -> Tuple[Any, str,
             # Check if this is a normalization task
             if 'normalize' in quiz_text.lower() or 'snake_case' in quiz_text.lower():
                 print("CSV normalization task detected")
+                print(f"Original DataFrame:\n{df}")
+                
                 # Normalize column names to snake_case
                 df.columns = df.columns.str.lower().str.replace(' ', '_')
                 
-                # Parse and normalize dates
+                # Parse and normalize dates with multiple format support
                 for col in df.columns:
                     if 'date' in col or 'joined' in col:
-                        df[col] = pd.to_datetime(df[col], errors='coerce').dt.strftime('%Y-%m-%d')
+                        # Try multiple date formats
+                        df[col] = pd.to_datetime(df[col], format='mixed', dayfirst=False, errors='coerce').dt.strftime('%Y-%m-%d')
+                
+                # Ensure numeric columns are integers
+                for col in df.columns:
+                    if 'value' in col or 'id' in col:
+                        df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
                 
                 # Sort by id if present
                 if 'id' in df.columns:
                     df = df.sort_values('id')
                 
+                print(f"Normalized DataFrame:\n{df}")
+                
                 # Convert to JSON
                 result = df.to_json(orient='records')
+                print(f"JSON result: {result}")
                 return result, "string", submit_url
             else:
                 answer = await solve_data_analysis(quiz_text, df)
@@ -329,19 +365,25 @@ async def solve_quiz_from_text(quiz_text: str, quiz_url: str) -> Tuple[Any, str,
                 path_prefix = data.get('pathPrefix', '')
                 extension = data.get('extension', '.md')
                 
+                print(f"GitHub params: owner={owner}, repo={repo}, sha={sha}, prefix={path_prefix}, ext={extension}")
+                
                 # Fetch GitHub tree
                 github_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{sha}?recursive=1"
                 tree_data = await fetch_api_data(github_url)
                 
                 # Count files matching criteria
-                count = sum(1 for item in tree_data.get('tree', [])
-                           if item['path'].startswith(path_prefix) and item['path'].endswith(extension))
+                count = 0
+                for item in tree_data.get('tree', []):
+                    path = item.get('path', '')
+                    if path.startswith(path_prefix) and path.endswith(extension):
+                        count += 1
+                        print(f"  Matched: {path}")
                 
                 # Add offset based on email length
                 offset = len(STUDENT_EMAIL) % 2
                 final_answer = count + offset
                 
-                print(f"Count: {count}, Offset: {offset}, Final: {final_answer}")
+                print(f"Count: {count}, Email length: {len(STUDENT_EMAIL)}, Offset: {offset}, Final: {final_answer}")
                 return final_answer, "number", submit_url
         
         # Handle API endpoints
