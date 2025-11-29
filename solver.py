@@ -75,6 +75,19 @@ async def download_file(url: str, headers: Optional[Dict] = None) -> bytes:
 async def fetch_api_data(url: str, headers: Optional[Dict] = None) -> Any:
     """Fetch data from API - returns JSON or text."""
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        # Add GitHub token if fetching from GitHub API
+        if 'api.github.com' in url:
+            if headers is None:
+                headers = {}
+            # Try to get GitHub token from environment
+            import os
+            github_token = os.getenv('GITHUB_TOKEN') or os.getenv('GH_TOKEN')
+            if github_token:
+                headers['Authorization'] = f'token {github_token}'
+                print(f"Using GitHub token for authentication")
+            else:
+                print("Warning: No GitHub token found, may hit rate limits")
+        
         resp = await client.get(url, headers=headers or {})
         resp.raise_for_status()
         try:
@@ -321,14 +334,42 @@ async def solve_quiz_from_text(quiz_text: str, quiz_url: str) -> Tuple[Any, str,
                 print("CSV normalization task detected")
                 print(f"Original DataFrame:\n{df}")
                 
+                # Strip whitespace from all string columns
+                for col in df.columns:
+                    if df[col].dtype == 'object':
+                        df[col] = df[col].str.strip()
+                
                 # Normalize column names to snake_case
-                df.columns = df.columns.str.lower().str.replace(' ', '_')
+                df.columns = df.columns.str.lower().str.replace(' ', '_').str.strip()
                 
                 # Parse and normalize dates with multiple format support
                 for col in df.columns:
                     if 'date' in col or 'joined' in col:
-                        # Try multiple date formats
-                        df[col] = pd.to_datetime(df[col], format='mixed', dayfirst=False, errors='coerce').dt.strftime('%Y-%m-%d')
+                        # Parse with explicit format detection, prioritizing US format (MM/DD/YY)
+                        parsed_dates = []
+                        for date_str in df[col]:
+                            if pd.isna(date_str):
+                                parsed_dates.append(None)
+                                continue
+                            date_str = str(date_str).strip()
+                            # Try US format first (MM/DD/YY or MM/DD/YYYY)
+                            try:
+                                dt = pd.to_datetime(date_str, format='%m/%d/%y')
+                                parsed_dates.append(dt.strftime('%Y-%m-%d'))
+                            except:
+                                try:
+                                    dt = pd.to_datetime(date_str, format='%Y-%m-%d')
+                                    parsed_dates.append(dt.strftime('%Y-%m-%d'))
+                                except:
+                                    try:
+                                        # Handle "1 Feb 2024" format
+                                        dt = pd.to_datetime(date_str, format='%d %b %Y')
+                                        parsed_dates.append(dt.strftime('%Y-%m-%d'))
+                                    except:
+                                        # Fallback to pandas parser
+                                        dt = pd.to_datetime(date_str, dayfirst=False)
+                                        parsed_dates.append(dt.strftime('%Y-%m-%d'))
+                        df[col] = parsed_dates
                 
                 # Ensure numeric columns are integers
                 for col in df.columns:
@@ -367,9 +408,23 @@ async def solve_quiz_from_text(quiz_text: str, quiz_url: str) -> Tuple[Any, str,
                 
                 print(f"GitHub params: owner={owner}, repo={repo}, sha={sha}, prefix={path_prefix}, ext={extension}")
                 
-                # Fetch GitHub tree
+                # Fetch GitHub tree with error handling for rate limits
                 github_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{sha}?recursive=1"
-                tree_data = await fetch_api_data(github_url)
+                try:
+                    tree_data = await fetch_api_data(github_url)
+                except Exception as e:
+                    if '403' in str(e) or 'rate limit' in str(e).lower():
+                        print("GitHub rate limit hit, waiting and retrying...")
+                        import asyncio
+                        await asyncio.sleep(5)
+                        try:
+                            tree_data = await fetch_api_data(github_url)
+                        except:
+                            # If still fails, try to compute from expected pattern
+                            print("Still rate limited, cannot fetch tree")
+                            raise
+                    else:
+                        raise
                 
                 # Count files matching criteria
                 count = 0
