@@ -396,6 +396,18 @@ async def solve_quiz_from_text(quiz_text: str, quiz_url: str) -> Tuple[Any, str,
             print(f"JSON file detected: {json_url}")
             file_bytes = await download_file(json_url)
             data = json.loads(file_bytes.decode('utf-8'))
+
+            # --- NEW SENTIMENT HANDLER ---
+            if 'sentiment' in quiz_text.lower() and isinstance(data, list):
+                print("Sentiment analysis task detected")
+                positive_count = 0
+                for item in data:
+                    label = str(item.get('sentiment', '') or item.get('label', '')).lower()
+                    if 'positive' in label:
+                        positive_count += 1
+                print(f"Counted {positive_count} positive tweets.")
+                return positive_count, "number", submit_url
+            # -----------------------------
             
             # Check if this is a GitHub tree API task
             if 'owner' in data and 'repo' in data and 'sha' in data:
