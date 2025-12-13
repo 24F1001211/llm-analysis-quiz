@@ -74,7 +74,7 @@ async def download_file(url: str, headers: Optional[Dict] = None) -> bytes:
 
 async def fetch_api_data(url: str, headers: Optional[Dict] = None) -> Any:
     """Fetch data from API - returns JSON or text."""
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
         # Add GitHub token if fetching from GitHub API
         if 'api.github.com' in url:
             if headers is None:
