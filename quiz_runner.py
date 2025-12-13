@@ -22,7 +22,7 @@ async def run_quiz(email: str, secret: str, start_url: str) -> Dict[str, Any]:
     }
 
     # For safety, limit number of hops
-    max_steps = 10
+    max_steps = 30
 
     for step in range(max_steps):
         if current_url is None:
