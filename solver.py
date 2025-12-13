@@ -465,7 +465,15 @@ async def solve_quiz_from_text(quiz_text: str, quiz_url: str) -> Tuple[Any, str,
 
     # Fallback to LLM
     print("Using fallback LLM answer")
-    system = "You are a helpful assistant. Answer directly and concisely. If asked for a command, replace placeholders with actual values."
+    # UPDATED STRICT PROMPT
+    system = """You are a data extraction engine.
+    - Return ONLY the raw answer value.
+    - Do NOT return JSON format.
+    - Do NOT return XML.
+    - Do NOT explain.
+    - If the answer is a URL, return just the URL.
+    - If the answer is a number, return just the number.
+    """
     user = f"Question:\n{quiz_text}\n\nMy email is: {STUDENT_EMAIL}\n\nAnswer:"
     answer = await call_llm(system, user)
     return clean_answer(answer), "string", submit_url
