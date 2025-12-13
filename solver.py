@@ -408,7 +408,31 @@ async def solve_quiz_from_text(quiz_text: str, quiz_url: str) -> Tuple[Any, str,
                 print(f"Counted {positive_count} positive tweets.")
                 return positive_count, "number", submit_url
             # -----------------------------
-            
+
+            # --- NEW: Cosine Similarity Handler (Step 18) ---
+            if 'cosine' in quiz_text.lower() and isinstance(data, dict):
+                print("Cosine similarity task detected")
+                v1 = data.get('embedding1') or data.get('v1')
+                v2 = data.get('embedding2') or data.get('v2')
+                
+                if v1 and v2:
+                    import numpy as np
+                    a = np.array(v1)
+                    b = np.array(v2)
+                    
+                    # Calculate Cosine Similarity: (A . B) / (||A|| * ||B||)
+                    dot_product = np.dot(a, b)
+                    norm_a = np.linalg.norm(a)
+                    norm_b = np.linalg.norm(b)
+                    
+                    similarity = dot_product / (norm_a * norm_b)
+                    
+                    # Round to 3 decimal places as requested
+                    result = round(similarity, 3)
+                    print(f"Calculated similarity: {result}")
+                    return result, "number", submit_url
+            # ------------------------------------------------
+          
             # Check if this is a GitHub tree API task
             if 'owner' in data and 'repo' in data and 'sha' in data:
                 print("GitHub API task detected")
